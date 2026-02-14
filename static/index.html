@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Berlinale 2026 Ticket Buyer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="logo">Berlinale 2026</h1>
+                <span class="subtitle">Ticket Buyer</span>
+            </div>
+            <div class="header-right">
+                <button id="btn-login" class="btn btn-outline" onclick="loginEventim()">Login Eventim</button>
+                <span id="session-status" class="session-badge offline">Not connected</span>
+            </div>
+        </header>
+
+        <!-- Date Tabs -->
+        <nav class="date-tabs" id="date-tabs">
+            <button class="date-tab active" data-tab="today-on-sale">Today On Sale</button>
+        </nav>
+
+        <!-- Search -->
+        <div class="search-bar">
+            <input type="text" id="search-input" class="search-input" placeholder="Search films by title...">
+        </div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Tasks Panel -->
+            <section class="tasks-section">
+                <h2 class="section-title">
+                    My Grab Tasks
+                    <span class="task-count" id="task-count">0</span>
+                </h2>
+                <div id="tasks-list" class="tasks-list">
+                    <div class="empty-state" id="tasks-empty">No tasks yet. Click "Schedule Grab" on a screening to add one.</div>
+                </div>
+            </section>
+
+            <!-- Programme List -->
+            <section class="programme-section" id="programme-section">
+                <div class="loading" id="programme-loading">Loading programme...</div>
+                <div id="programme-list"></div>
+            </section>
+        </main>
+
+        <!-- Toast notifications -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,560 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from app.config import Config
+from app.models import GrabTask
+
+logger = logging.getLogger(__name__)
+
+
+class BrowserManager:
+    """Manages a persistent Playwright browser context for Eventim sessions."""
+
+    def __init__(self):
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._initialized = False
+        self._init_lock = asyncio.Lock()
+
+    async def init_browser(self) -> None:
+        """Start Playwright and create a persistent browser context."""
+        if self._initialized:
+            return
+
+        async with self._init_lock:
+            # Double-check after acquiring the lock
+            if self._initialized:
+                return
+
+            from playwright.async_api import async_playwright
+
+            profile_dir = Path(Config.BROWSER_PROFILE_DIR).resolve()
+            profile_dir.mkdir(parents=True, exist_ok=True)
+
+            # Remove stale SingletonLock from previous crashed browser
+            lock_file = profile_dir / "SingletonLock"
+            if lock_file.exists():
+                lock_file.unlink(missing_ok=True)
+                logger.warning("Removed stale SingletonLock from %s", profile_dir)
+
+            self._playwright = await async_playwright().start()
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=False,
+                viewport={"width": 1280, "height": 900},
+                locale="en-US",
+                timezone_id=Config.TIMEZONE,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
+            )
+
+            # Apply stealth to existing and future pages
+            try:
+                from playwright_stealth import stealth_async
+                for page in self._context.pages:
+                    await stealth_async(page)
+                self._context.on("page", lambda p: asyncio.ensure_future(stealth_async(p)))
+            except ImportError:
+                logger.warning("playwright-stealth not installed, skipping stealth setup")
+
+            self._initialized = True
+            logger.info("Browser initialized with persistent profile at %s", profile_dir)
+
+    async def get_page(self) -> "Page":
+        """Get the main browser page, creating one if needed."""
+        if not self._initialized:
+            await self.init_browser()
+        pages = self._context.pages
+        if pages:
+            return pages[0]
+        page = await self._context.new_page()
+        try:
+            from playwright_stealth import stealth_async
+            await stealth_async(page)
+        except ImportError:
+            pass
+        return page
+
+    async def new_page(self) -> "Page":
+        """Create a new browser tab."""
+        if not self._initialized:
+            await self.init_browser()
+        page = await self._context.new_page()
+        try:
+            from playwright_stealth import stealth_async
+            await stealth_async(page)
+        except ImportError:
+            pass
+        return page
+
+    async def open_login_page(self) -> bool:
+        """Open Eventim login page for manual user login."""
+        try:
+            await self.init_browser()
+            page = await self.get_page()
+            await page.goto(Config.EVENTIM_LOGIN_URL, wait_until="domcontentloaded")
+            logger.info("Opened Eventim login page")
+            return True
+        except Exception:
+            logger.exception("Failed to open login page")
+            return False
+
+    async def check_session(self) -> dict:
+        """Check if the current Eventim session is valid."""
+        try:
+            if not self._initialized:
+                return {"logged_in": False, "message": "Browser not started"}
+
+            page = await self.get_page()
+            await page.goto(Config.EVENTIM_LOGIN_URL, wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
+
+            url = page.url
+            if "/login" in url.lower() or "/signin" in url.lower():
+                return {"logged_in": False, "message": "Not logged in"}
+
+            try:
+                account_el = await page.query_selector(
+                    '[class*="account"], [class*="user"], [class*="profile"]'
+                )
+                if account_el:
+                    return {"logged_in": True, "message": "Session active"}
+            except Exception:
+                pass
+
+            if "myaccount" in url.lower() or "account" in url.lower():
+                return {"logged_in": True, "message": "Session active"}
+
+            return {"logged_in": False, "message": "Session status unclear"}
+        except Exception as e:
+            logger.exception("Failed to check session")
+            return {"logged_in": False, "message": str(e)}
+
+    async def close(self) -> None:
+        """Close the browser and cleanup."""
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        self._initialized = False
+        logger.info("Browser closed")
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._initialized
+
+
+class TicketGrabber:
+    """Automates the ticket purchasing flow on Eventim using Playwright."""
+
+    def __init__(self, browser_manager: BrowserManager):
+        self.browser = browser_manager
+
+    async def grab_ticket(self, task: GrabTask, on_status=None) -> dict:
+        """Execute the full ticket grabbing flow.
+
+        Returns dict with "success" bool, "message" string, and "page" (kept open on success).
+        """
+        if not task.eventim_url:
+            return {"success": False, "message": "No Eventim URL available"}
+
+        async def _report(status: str, msg: str):
+            if on_status:
+                await on_status(status, msg)
+            logger.info("Grab [%s] %s: %s", task.ext_id_screening, status, msg)
+
+        page = None
+        try:
+            await _report("grabbing", "Opening Eventim page...")
+            page = await self.browser.new_page()
+
+            # Navigate to the event URL
+            try:
+                await page.goto(task.eventim_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                # Eventim sometimes blocks; retry with commit
+                await _report("grabbing", "Retrying navigation...")
+                await page.goto(task.eventim_url, wait_until="commit", timeout=30000)
+
+            await page.wait_for_timeout(2000)
+            await _report("grabbing", "Page loaded, handling consent & finding tickets...")
+
+            # Step 0: Dismiss cookie consent banner if present
+            await self._dismiss_cookie_banner(page)
+
+            # Step 1: Try the Eventim purchase flow
+            result = await self._eventim_purchase_flow(page, task.ticket_count, _report)
+            if result["success"]:
+                # Don't close the page - let user complete payment
+                return result
+
+            # Step 2: Retry
+            for attempt in range(Config.GRAB_RETRY_COUNT):
+                await _report("grabbing", f"Retry {attempt + 1}/{Config.GRAB_RETRY_COUNT}...")
+                await asyncio.sleep(Config.GRAB_RETRY_DELAY)
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    await page.reload(wait_until="commit", timeout=15000)
+                await page.wait_for_timeout(2000)
+                await self._dismiss_cookie_banner(page)
+
+                result = await self._eventim_purchase_flow(page, task.ticket_count, _report)
+                if result["success"]:
+                    return result
+
+            await _report("failed", "Could not complete purchase after all retries")
+            return {"success": False, "message": "Purchase flow failed after retries"}
+
+        except Exception as e:
+            logger.exception("Grab error for %s", task.ext_id_screening)
+            await _report("failed", str(e))
+            return {"success": False, "message": str(e)}
+
+    async def _dismiss_cookie_banner(self, page) -> None:
+        """Dismiss Eventim cookie/consent banner if present."""
+        consent_selectors = [
+            '#cmpbntyestxt',  # common Eventim consent button ID
+            'button[id*="consent"]',
+            'button[id*="accept"]',
+            'button:has-text("Accept")',
+            'button:has-text("Akzeptieren")',
+            'button:has-text("Accept All")',
+            'button:has-text("Alle akzeptieren")',
+            'button:has-text("Agree")',
+            'button:has-text("OK")',
+            '[class*="consent"] button',
+            '[class*="cookie"] button',
+            '#onetrust-accept-btn-handler',
+        ]
+        for sel in consent_selectors:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    logger.info("Dismissed consent banner: %s", sel)
+                    await page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+
+    async def _eventim_purchase_flow(self, page, ticket_count: int, report) -> dict:
+        """Handle Eventim's actual purchase flow.
+
+        The /noapp/event/{ID}/ URL leads to the Eventim event page.
+        Flow: Event page -> Select tickets -> Add to cart -> Cart page
+        """
+        current_url = page.url
+        await report("grabbing", f"On page: {current_url[:80]}...")
+
+        # Take a screenshot for debugging
+        try:
+            await page.screenshot(path="data/eventim_debug.png")
+        except Exception:
+            pass
+
+        # --- Phase 1: Find and click the main ticket/buy action ---
+        # Eventim pages may show: a direct ticket selector, or a "Tickets" button to reveal it
+
+        # Check if we're already on a ticket selection / seat map page
+        if any(kw in current_url.lower() for kw in ["cart", "warenkorb", "basket", "checkout"]):
+            await report("success", "Already on cart/checkout page!")
+            return {"success": True, "message": "Reached cart/checkout page"}
+
+        # Look for ticket quantity selectors (Eventim uses <select> or +/- buttons)
+        qty_set = await self._set_ticket_quantity(page, ticket_count)
+        if qty_set:
+            await report("grabbing", f"Set quantity to {ticket_count}")
+
+        # Look for the main action button to buy/reserve/add to cart
+        buy_clicked = await self._click_buy_button(page)
+
+        if buy_clicked:
+            await report("grabbing", "Clicked buy button, waiting for next page...")
+            await page.wait_for_timeout(3000)
+
+            # Check where we ended up
+            new_url = page.url
+            if any(kw in new_url.lower() for kw in ["cart", "warenkorb", "basket", "checkout", "order"]):
+                await report("success", "Reached cart/checkout page!")
+                return {"success": True, "message": "Ticket added to cart - complete payment in browser"}
+
+            # We might be on a seat selection or intermediate page
+            # Try to find and click through additional steps
+            await report("grabbing", "Navigating through additional steps...")
+            result = await self._handle_intermediate_steps(page, ticket_count, report)
+            if result:
+                return result
+
+            # Even if we're not sure, if we clicked the button, report semi-success
+            try:
+                await page.screenshot(path="data/eventim_after_buy.png")
+            except Exception:
+                pass
+            await report("success", "Buy button clicked - check browser to complete purchase")
+            return {"success": True, "message": "Buy button clicked - check browser window to continue"}
+
+        # --- Phase 2: Maybe we need to click a "Tickets" link first ---
+        ticket_link_clicked = await self._click_ticket_link(page)
+        if ticket_link_clicked:
+            await report("grabbing", "Clicked ticket link, waiting...")
+            await page.wait_for_timeout(3000)
+            await self._dismiss_cookie_banner(page)
+
+            qty_set = await self._set_ticket_quantity(page, ticket_count)
+            buy_clicked = await self._click_buy_button(page)
+            if buy_clicked:
+                await page.wait_for_timeout(3000)
+                await report("success", "Buy button clicked - check browser to complete")
+                return {"success": True, "message": "Ticket process started - check browser window"}
+
+        await report("grabbing", "Could not find purchase elements on page")
+        return {"success": False, "message": "No purchase elements found on page"}
+
+    async def _set_ticket_quantity(self, page, count: int) -> bool:
+        """Set ticket quantity using Eventim's stepper UI.
+
+        Eventim Berlinale uses:
+          <button class="js-stepper-more"> with <span class="icon icon-plus">
+          <button class="js-stepper-less"> with <span class="icon icon-minus">
+          <div class="js-stepper-amount-text">0</div>
+        The first stepper row is for full-price tickets.
+        """
+        # Primary: Eventim's js-stepper-more button (the "+" button)
+        plus_buttons = await page.query_selector_all('button.js-stepper-more')
+        for btn in plus_buttons:
+            try:
+                if await btn.is_visible():
+                    for _ in range(count):
+                        await btn.click()
+                        await page.wait_for_timeout(400)
+                    logger.info("Clicked js-stepper-more %d times", count)
+                    return True
+            except Exception:
+                continue
+
+        # Fallback: data-qa="more-tickets" button
+        btn = await page.query_selector('[data-qa="more-tickets"]')
+        if btn:
+            try:
+                if await btn.is_visible():
+                    for _ in range(count):
+                        await btn.click()
+                        await page.wait_for_timeout(400)
+                    logger.info("Clicked more-tickets %d times", count)
+                    return True
+            except Exception:
+                pass
+
+        # Fallback: title="Increase amount" button
+        btn = await page.query_selector('button[title*="Increase"], button[title*="ncrease"]')
+        if btn:
+            try:
+                if await btn.is_visible():
+                    for _ in range(count):
+                        await btn.click()
+                        await page.wait_for_timeout(400)
+                    logger.info("Clicked increase-amount %d times", count)
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    async def _click_buy_button(self, page) -> bool:
+        """Click the cart/checkout button on Eventim.
+
+        Eventim Berlinale uses:
+          <button class="btn js-stepper-action"> "N Tickets, € XX.XX" </button>
+        This button submits the form to checkout.html.
+        """
+        # Priority 1: Eventim's js-stepper-action button (the cart button)
+        btn = await page.query_selector('button.js-stepper-action')
+        if btn:
+            try:
+                if await btn.is_visible():
+                    text = (await btn.inner_text()).strip()
+                    # Only click if tickets have been selected (not "0 Tickets")
+                    if "0 Ticket" not in text:
+                        await btn.scroll_into_view_if_needed()
+                        await btn.click()
+                        logger.info("Clicked js-stepper-action: '%s'", text)
+                        return True
+                    else:
+                        logger.warning("Cart button shows 0 tickets: '%s'", text)
+            except Exception:
+                pass
+
+        # Priority 2: Any button with "Ticket" in text and non-zero count
+        try:
+            ticket_btn = await page.query_selector('button:has-text("Ticket")')
+            if ticket_btn and await ticket_btn.is_visible():
+                text = (await ticket_btn.inner_text()).strip()
+                if "0 Ticket" not in text and "Ticket" in text:
+                    await ticket_btn.scroll_into_view_if_needed()
+                    await ticket_btn.click()
+                    logger.info("Clicked ticket button: '%s'", text)
+                    return True
+        except Exception:
+            pass
+
+        # Priority 3: Standard selectors
+        selectors = [
+            'button:has-text("In den Warenkorb")',
+            'button:has-text("Add to cart")',
+            'button:has-text("Add to basket")',
+            'button:has-text("Buy tickets")',
+            'button:has-text("Buy now")',
+            'button:has-text("Kaufen")',
+        ]
+        for sel in selectors:
+            try:
+                b = await page.query_selector(sel)
+                if b and await b.is_visible():
+                    await b.scroll_into_view_if_needed()
+                    await b.click()
+                    logger.info("Clicked buy button: %s", sel)
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    async def _click_ticket_link(self, page) -> bool:
+        """Click a "Tickets" link that may reveal the purchase section."""
+        selectors = [
+            'a:has-text("Tickets")',
+            'a:has-text("Karten")',
+            'a:has-text("Book")',
+            'button:has-text("Tickets")',
+            'button:has-text("Karten")',
+            '[class*="ticket-button"]',
+            '[class*="ticketButton"]',
+            'a[href*="ticket"]',
+        ]
+        for sel in selectors:
+            try:
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.click()
+                    logger.info("Clicked ticket link: %s", sel)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _handle_intermediate_steps(self, page, ticket_count: int, report) -> dict | None:
+        """Handle seat selection or other intermediate steps after initial buy click."""
+        # Wait for possible page transition
+        await page.wait_for_timeout(2000)
+        current_url = page.url
+
+        # Check if we're now on a seat map / selection page
+        # Try to find "continue" or "next" or "weiter" button
+        continue_selectors = [
+            'button:has-text("Continue")',
+            'button:has-text("Weiter")',
+            'button:has-text("Next")',
+            'button:has-text("Proceed")',
+            'button:has-text("Fortfahren")',
+            'a:has-text("Continue")',
+            'a:has-text("Weiter")',
+            'button:has-text("Accept")',
+            'button:has-text("Confirm")',
+            'button:has-text("Bestätigen")',
+        ]
+
+        for sel in continue_selectors:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    await btn.click()
+                    logger.info("Clicked continue: %s", sel)
+                    await page.wait_for_timeout(3000)
+
+                    new_url = page.url
+                    if any(kw in new_url.lower() for kw in ["cart", "warenkorb", "basket", "checkout", "order"]):
+                        await report("success", "Reached checkout!")
+                        return {"success": True, "message": "Reached checkout - complete payment in browser"}
+            except Exception:
+                continue
+
+        # Try another round of buy button clicks (new page might have different structure)
+        buy_clicked = await self._click_buy_button(page)
+        if buy_clicked:
+            await page.wait_for_timeout(3000)
+            new_url = page.url
+            if any(kw in new_url.lower() for kw in ["cart", "warenkorb", "basket", "checkout"]):
+                return {"success": True, "message": "Ticket added to cart"}
+
+        return None
+
+    async def preheat(self, task: GrabTask) -> "Page | None":
+        """Open the Eventim page ahead of time to warm up."""
+        if not task.eventim_url:
+            return None
+        try:
+            page = await self.browser.new_page()
+            try:
+                await page.goto(task.eventim_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                await page.goto(task.eventim_url, wait_until="commit", timeout=30000)
+            await self._dismiss_cookie_banner(page)
+            logger.info("Preheated page for %s", task.ext_id_screening)
+            return page
+        except Exception:
+            logger.exception("Preheat failed for %s", task.ext_id_screening)
+            return None
+
+    async def grab_with_refresh(self, page, task: GrabTask, on_status=None) -> dict:
+        """Grab ticket by refreshing a preheated page at sale time."""
+        async def _report(status: str, msg: str):
+            if on_status:
+                await on_status(status, msg)
+
+        try:
+            await _report("grabbing", "Refreshing page at sale time...")
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
+            except Exception:
+                await page.reload(wait_until="commit", timeout=15000)
+            await page.wait_for_timeout(1500)
+            await self._dismiss_cookie_banner(page)
+
+            result = await self._eventim_purchase_flow(page, task.ticket_count, _report)
+            if result["success"]:
+                return result
+
+            for attempt in range(Config.GRAB_RETRY_COUNT):
+                await _report("grabbing", f"Retry {attempt + 1}...")
+                await asyncio.sleep(Config.GRAB_RETRY_DELAY)
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    await page.reload(wait_until="commit", timeout=15000)
+                await page.wait_for_timeout(1500)
+
+                result = await self._eventim_purchase_flow(page, task.ticket_count, _report)
+                if result["success"]:
+                    return result
+
+            await _report("failed", "All retries exhausted")
+            return {"success": False, "message": "Failed after all retries"}
+        except Exception as e:
+            logger.exception("grab_with_refresh error")
+            await _report("failed", str(e))
+            return {"success": False, "message": str(e)}
+
+
+# Global singletons
+browser_manager = BrowserManager()
+ticket_grabber = TicketGrabber(browser_manager)

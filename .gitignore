@@ -1,0 +1,48 @@
+# === Browser profile (contains Eventim session, cookies, credentials) ===
+data/browser_profile/
+
+# === Debug screenshots (may contain personal info) ===
+data/*.png
+
+# === Task data (personal film selections) ===
+data/tasks.json
+
+# === AI assistant config ===
+.claude/
+CLAUDE.md
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# === Virtual environments ===
+venv/
+.venv/
+env/
+.env
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === OS ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
